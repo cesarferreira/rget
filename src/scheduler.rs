@@ -37,10 +37,25 @@ pub const SPLIT_MARGIN: u64 = 4 << 20;
 /// Do not bother splitting unless both halves are worth having.
 pub const MIN_SPLIT_TAIL: u64 = 8 << 20;
 
-/// Chunk size for a fresh plan. Aims for a few ranges per connection so that
-/// slow connections naturally get less work without any adaptive logic.
+/// Chunk size for a fresh plan: one range per connection.
+///
+/// This used to plan four ranges per connection so that a slow connection would
+/// naturally pick up less work. That predates work stealing, and it costs a full
+/// round trip per extra wave of ranges: a client with `n` connections and `4n`
+/// ranges pays `4 × RTT` in request setup before the last byte can start moving,
+/// on every download. Measured against a server with 200 ms of per-request
+/// latency, that oversubscription made `-c8` 2.5× *slower* than a single
+/// request, because latency, not bandwidth, was the limit.
+///
+/// Rebalancing is now [`Scheduler::acquire`]'s job: it splits a range that is
+/// running behind and hands the tail to an idle worker, which adapts to real
+/// connection speed rather than guessing at it up front. So plan the minimum
+/// number of ranges and let stealing do the rest.
+///
+/// [`MAX_CHUNK`] still applies, so very large files get more ranges than there
+/// are connections -- which is what keeps crash recovery granular.
 pub fn chunk_size(total: u64, connections: usize) -> u64 {
-    let target_chunks = (connections as u64).saturating_mul(4).max(1);
+    let target_chunks = (connections as u64).max(1);
     (total / target_chunks).clamp(MIN_CHUNK, MAX_CHUNK)
 }
 
@@ -573,7 +588,8 @@ mod tests {
         let s = Scheduler::from_ranges(&plan(total, 4));
         let (_, count) = s.counts();
         let mut seen = Vec::new();
-        while let Some((lease, split)) = s.acquire() {
+        for _ in 0..count {
+            let (lease, split) = s.acquire().expect("a pending range");
             assert!(split.is_none(), "should not split while ranges are pending");
             assert!(
                 !seen.contains(&lease.idx),
@@ -583,6 +599,20 @@ mod tests {
             seen.push(lease.idx);
         }
         assert_eq!(seen.len(), count);
+
+        // The plan is fully leased now, so the only way to satisfy more demand
+        // is to steal the tail of a range already in flight. A plan of one range
+        // per connection relies on exactly that.
+        if let Some((lease, split)) = s.acquire() {
+            assert!(
+                split.is_some(),
+                "a lease beyond the plan must come from a split"
+            );
+            assert!(
+                !seen.contains(&lease.idx),
+                "split handed back an existing range"
+            );
+        }
     }
 
     #[test]
