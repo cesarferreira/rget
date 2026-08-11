@@ -68,6 +68,43 @@ async fn downloads_in_parallel_and_reassembles_exactly() {
 }
 
 #[tokio::test]
+async fn the_probe_costs_no_extra_request() {
+    let ws = Workspace::new("priming");
+    let server = Server::start(Config::with_body(512 * 1024)).await;
+    let body = server.body();
+
+    let mut req = request(&server, "/primed.bin", &ws);
+    req.connections = 1;
+
+    let (result, _) = run(&ws, req).await;
+    let report = result.expect("download should succeed");
+    assert_eq!(std::fs::read(&report.path).unwrap(), body);
+
+    // The old probe asked for `bytes=0-0`, read one byte and threw it away: a
+    // whole round trip of pure overhead on every download. The priming probe
+    // asks for `bytes=0-` and transfers the answer, so a one-connection
+    // download costs one request and no byte is fetched twice.
+    let stats = server.stats();
+    assert!(
+        !stats.ranges.contains(&(0, Some(0))),
+        "a one-byte throwaway probe is still being sent: {:?}",
+        stats.ranges
+    );
+    assert_eq!(
+        stats.requests, 1,
+        "expected a single request, saw {:?}",
+        stats.paths
+    );
+    assert_eq!(
+        stats.bytes_served,
+        body.len(),
+        "served {} bytes for a {} byte file; the probe is re-fetching",
+        stats.bytes_served,
+        body.len()
+    );
+}
+
+#[tokio::test]
 async fn single_connection_still_works() {
     let ws = Workspace::new("single");
     let server = Server::start(Config::with_body(512 * 1024)).await;
@@ -95,17 +132,21 @@ async fn falls_back_to_sequential_without_range_support() {
     let report = result.expect("sequential fallback should need no intervention");
     assert_eq!(std::fs::read(&report.path).unwrap(), body);
 
-    // The probe legitimately asks for `bytes=0-0` to find out whether ranges
-    // work. Once it knows they do not, no transfer may ask for a range.
+    // The priming probe asks for `bytes=0-`, which is the only range this
+    // server may ever see: once we know ranges do not work, no transfer may ask
+    // for one. `bytes=0-` is also indistinguishable from a plain GET in cost --
+    // the server answers 200 with the whole body -- so a range-less download
+    // costs exactly one request, the same as wget's.
     let stats = server.stats();
     assert!(
-        stats.ranges.iter().all(|r| *r == (0, Some(0))),
-        "transfer sent a Range to a server that does not support it: {:?}",
+        stats.ranges.iter().all(|r| *r == (0, None)),
+        "transfer sent a real range to a server that does not support it: {:?}",
         stats.ranges
     );
-    assert!(
-        stats.plain_requests >= 1,
-        "expected a plain GET for the body"
+    assert_eq!(
+        stats.requests, 1,
+        "a range-less download should cost exactly one request, got {:?}",
+        stats.paths
     );
 }
 

@@ -104,9 +104,15 @@ pub async fn download(
         max_attempts: req.retries.max(1),
         ..RetryPolicy::default()
     };
-    let info = probe_with_retry(&client, &primary, &policy, &reporter, &cancel)
+    let primed = probe_with_retry(&client, &primary, &policy, &reporter, &cancel)
         .await
         .with_context(|| format!("cannot reach {}", http::redact(&primary)))?;
+    let info = primed.info.clone();
+    // Held until the plan exists, because only then do we know whether anything
+    // still needs byte 0. On a resume that is already past byte 0 this gets
+    // dropped, which costs one aborted response and saves nothing -- fresh
+    // downloads are the case worth optimising.
+    let mut primed_body = primed.body;
     debug!(
         url = %http::redact(&info.final_url),
         size = ?info.size,
@@ -334,6 +340,21 @@ pub async fn download(
         parallel,
     });
 
+    // Only hand the primed body to the workers if byte 0 is still outstanding.
+    // A resume whose first range already has bytes on disk cannot splice this
+    // body in, so drop it and let the workers request what they actually need.
+    let needs_byte_zero = ranges
+        .iter()
+        .any(|r| r.start == 0 && r.state != RangeState::Complete && r.bytes_written == 0);
+    if !needs_byte_zero {
+        primed_body = None;
+    }
+    let primed_body = primed_body.map(|response| worker::PrimedBody {
+        url: info.final_url.clone(),
+        response,
+    });
+    debug!(primed = primed_body.is_some(), "priming probe body");
+
     let ctx = Arc::new(WorkerCtx {
         client: client.clone(),
         sources: sources.clone(),
@@ -347,6 +368,7 @@ pub async fn download(
         ranges_supported: info.accept_ranges,
         discovered_size: Arc::new(AtomicU64::new(0)),
         cancel: cancel.clone(),
+        primed: std::sync::Mutex::new(primed_body),
     });
 
     let committer = tokio::spawn(commit_loop(
@@ -510,14 +532,14 @@ async fn probe_with_retry(
     policy: &RetryPolicy,
     reporter: &Reporter,
     cancel: &Cancel,
-) -> Result<RemoteInfo, TransferError> {
+) -> Result<http::Primed, TransferError> {
     let mut attempts = 0u32;
     loop {
         if cancel.is_cancelled() {
             return Err(TransferError::Cancelled);
         }
-        match http::probe(client, url).await {
-            Ok(info) => return Ok(info),
+        match http::probe_priming(client, url).await {
+            Ok(primed) => return Ok(primed),
             Err(err) => {
                 attempts += 1;
                 match policy.decide(&err, attempts) {
