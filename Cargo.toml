@@ -1,12 +1,19 @@
 [package]
-name = "rget-next"
+name = "rget-cli"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 description = "High-performance resumable download manager"
 license = "MIT"
 authors = ["Cesar Ferreira"]
-repository = "https://github.com/cesarferreira/rget-next"
+repository = "https://github.com/cesarferreira/rget"
+
+# The crates.io name `rget` belongs to an unrelated 2017 crate, so the package
+# is published as `rget-cli`. The library and the command it installs are both
+# plain `rget`.
+[lib]
+name = "rget"
+path = "src/lib.rs"
 
 [[bin]]
 name = "rget"

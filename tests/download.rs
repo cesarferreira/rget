@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use harness::{Config, Server, Workspace, sha256};
-use rget_next::engine::{self, DownloadReport, DownloadRequest};
-use rget_next::http::HttpConfig;
-use rget_next::integrity::{Algorithm, Checksum};
-use rget_next::progress::{Event, Reporter};
-use rget_next::shutdown::Cancel;
+use rget::engine::{self, DownloadReport, DownloadRequest};
+use rget::http::HttpConfig;
+use rget::integrity::{Algorithm, Checksum};
+use rget::progress::{Event, Reporter};
+use rget::shutdown::Cancel;
 use url::Url;
 
 fn request(server: &Server, path: &str, ws: &Workspace) -> DownloadRequest {
@@ -377,7 +377,7 @@ async fn checksum_mismatch_is_a_failure() {
     // And the record is marked failed, not complete.
     let store = ws.store();
     let all = store.list().unwrap();
-    assert_eq!(all[0].status, rget_next::storage::Status::Failed);
+    assert_eq!(all[0].status, rget::storage::Status::Failed);
 }
 
 #[tokio::test]
@@ -387,7 +387,7 @@ async fn verifies_blake3_and_sha512_too() {
     let body = server.body();
 
     for algo in [Algorithm::Blake3, Algorithm::Sha512] {
-        let digest = rget_next::integrity::hash_bytes(algo, &body);
+        let digest = rget::integrity::hash_bytes(algo, &body);
         let mut req = request(&server, "/multi.bin", &ws);
         req.output = Some(format!("{algo}.bin"));
         req.checksum = Some(Checksum::parse(algo, &digest).unwrap());
@@ -495,7 +495,7 @@ async fn records_state_in_the_store() {
 
     let store = ws.store();
     let record = store.get(&report.id).unwrap().expect("record persisted");
-    assert_eq!(record.status, rget_next::storage::Status::Complete);
+    assert_eq!(record.status, rget::storage::Status::Complete);
     assert_eq!(record.total_size, Some(20 << 20));
     assert_eq!(record.durable_bytes, 20 << 20);
     assert_eq!(record.etag.as_deref(), Some("\"v1\""));
@@ -510,7 +510,7 @@ async fn records_state_in_the_store() {
     assert!(
         ranges
             .iter()
-            .all(|r| r.state == rget_next::storage::RangeState::Complete),
+            .all(|r| r.state == rget::storage::RangeState::Complete),
         "every range should be complete"
     );
     // The plan still partitions the file exactly.

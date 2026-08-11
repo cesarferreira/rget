@@ -484,8 +484,8 @@ impl Workspace {
         self.dir.join(name)
     }
 
-    pub fn store(&self) -> rget_next::storage::Store {
-        rget_next::storage::Store::open(&self.db()).expect("open store")
+    pub fn store(&self) -> rget::storage::Store {
+        rget::storage::Store::open(&self.db()).expect("open store")
     }
 }
 

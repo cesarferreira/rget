@@ -51,20 +51,20 @@ jobs:
         if: matrix.target != 'x86_64-pc-windows-msvc'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../rget-next-${{ matrix.target }}.tar.gz rget
+          tar czf ../../../rget-${{ matrix.target }}.tar.gz rget
           cd ../../..
 
       - name: Package (Windows)
         if: matrix.target == 'x86_64-pc-windows-msvc'
         shell: pwsh
         run: |
-          Compress-Archive -Path "target/${{ matrix.target }}/release/rget.exe" -DestinationPath "rget-next-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/rget.exe" -DestinationPath "rget-${{ matrix.target }}.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: rget-next-${{ matrix.target }}
-          path: rget-next-${{ matrix.target }}.*
+          name: rget-${{ matrix.target }}
+          path: rget-${{ matrix.target }}.*
 
   release:
     name: Release

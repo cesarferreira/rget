@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use rget_next::cli::{self, Cli};
+use rget::cli::{self, Cli};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -33,7 +33,7 @@ fn init_tracing(verbose: bool) {
 
     let filter = match std::env::var("RUST_LOG") {
         Ok(value) => EnvFilter::new(value),
-        Err(_) if verbose => EnvFilter::new("rget_next=debug"),
+        Err(_) if verbose => EnvFilter::new("rget=debug"),
         Err(_) => EnvFilter::new("warn"),
     };
 

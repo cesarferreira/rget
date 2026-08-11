@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>rget-next</h1>
+  <h1>rget</h1>
 
   <p><strong>High-performance resumable download manager</strong></p>
 
@@ -7,7 +7,6 @@
     <img alt="License" src="https://img.shields.io/badge/license-MIT-green">
     <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
     <img alt="Edition" src="https://img.shields.io/badge/edition-2024-blue">
-    <a href="https://crates.io/crates/rget-next"><img alt="crates.io" src="https://img.shields.io/crates/v/rget-next.svg"></a>
   </p>
 
   <p>
@@ -26,8 +25,13 @@
 Requires [Rust](https://rustup.rs) **1.85+** and `~/.cargo/bin` on your `PATH`.
 
 ```bash
-cargo install rget-next
+cargo install rget-cli
 ```
+
+> Published as **`rget-cli`**, installs a command called **`rget`**. The bare
+> `rget` name on crates.io belongs to an unrelated project last published in
+> 2017. Before the first release, install from git instead:
+> `cargo install --git https://github.com/cesarferreira/rget`
 
 Verify:
 
@@ -39,8 +43,8 @@ rget --help
 <summary><strong>Build from source</strong> — for development or unreleased changes</summary>
 
 ```bash
-git clone https://github.com/cesarferreira/rget-next.git
-cd rget-next
+git clone https://github.com/cesarferreira/rget.git
+cd rget
 cargo install --path . --locked
 # or
 make install-release
@@ -78,6 +82,20 @@ linux-6.7.tar.xz
   8 connections        18/33 chunks
 ███████████████████████░░░░░░░░░░░░░░░░░ 55%
 ```
+
+The first time you run it, `rget` asks where downloads should go, prefilled with
+your system's Downloads folder:
+
+```
+Where should rget save downloads?
+  Folder [~/Downloads]:
+```
+
+Press Enter to accept, or type somewhere else. It only asks once. `--dir`
+overrides it for a single download, and `rget config --dir <path>` changes it
+for good. If stdin is not a terminal — a script, a pipeline, `--json`, `--quiet`
+— it never asks and quietly uses the system Downloads folder, so automation
+behaves identically to a terminal.
 
 **If anything interrupts it, run the same command again.** No `--resume` flag,
 no `.part` files to clean up:
@@ -119,6 +137,10 @@ rget URL --header 'Authorization: Bearer …' --header 'X-Trace: 1'
 ### Managing downloads
 
 ```bash
+rget config           # where downloads go, and where state lives
+rget config --dir ~/ISOs
+rget config --reset   # be asked again next time
+
 rget list             # everything this machine knows about
 rget info a82fd1      # validators, ranges, progress, last error
 rget resume a82fd1    # continue one, with no other flags needed
@@ -149,7 +171,8 @@ resume reasoning and validator mismatches. Credentials are never logged.
 |---|---|
 | **Parallelism** | The file is split into byte ranges; workers `pwrite` straight into the destination at the right offset. No temp files, no merge pass, so a 500 GB download needs 500 GB of disk and finishing costs nothing. |
 | **Memory** | One body chunk per connection, streamed to disk. Peak memory is independent of file size. |
-| **Resume** | Progress lives in SQLite in your platform's data dir (`~/.local/share/rget/downloads.db`, `~/Library/Application Support/rget/downloads.db`). |
+| **Resume** | Progress lives in SQLite in your platform's data dir (`~/.local/share/rget/downloads.db`, `~/Library/Application Support/rget/downloads.db`). Settings live in the same database, so there is one file to move or delete. |
+| **Where files land** | The system Downloads folder by default — on Linux that is `XDG_DOWNLOAD_DIR`, which is localised, so it is read rather than guessed. |
 | **Safety** | Before reusing a byte, `rget` re-validates the remote with `ETag`/`Last-Modified`/size and checks the local file is still the same file. If the remote changed, it refuses rather than splicing two versions together. |
 | **Slow servers** | Ranges are subdivided on the fly, so one slow connection does not hold up the tail of a download. |
 | **Failure** | Per-range retries with exponential backoff and jitter, honouring `Retry-After`. One range failing never discards another's progress. |

@@ -6,11 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use harness::{Config, Server, Workspace, sha256};
-use rget_next::engine::{self, DownloadRequest};
-use rget_next::http::HttpConfig;
-use rget_next::integrity::{Algorithm, Checksum};
-use rget_next::progress::{Event, NoteLevel, Reporter};
-use rget_next::shutdown::Cancel;
+use rget::engine::{self, DownloadRequest};
+use rget::http::HttpConfig;
+use rget::integrity::{Algorithm, Checksum};
+use rget::progress::{Event, NoteLevel, Reporter};
+use rget::shutdown::Cancel;
 use url::Url;
 
 fn request(urls: Vec<String>, ws: &Workspace) -> DownloadRequest {

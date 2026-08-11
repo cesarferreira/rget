@@ -290,6 +290,37 @@ impl Store {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    // -- settings ----------------------------------------------------------
+
+    /// Read a persisted setting. Settings live in the same database as the
+    /// downloads so there is exactly one piece of state to back up or delete.
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.lock();
+        Ok(conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_meta(&self, key: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute("DELETE FROM meta WHERE key = ?1", params![key])?;
+        Ok(())
+    }
+
     // -- lookup ------------------------------------------------------------
 
     pub fn get(&self, id: &str) -> Result<Option<DownloadRecord>> {

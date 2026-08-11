@@ -11,8 +11,8 @@
 //! generator is fifteen lines, and a fixed seed list means a failure is
 //! reproducible from the test name alone.
 
-use rget_next::scheduler::{MIN_SPLIT_TAIL, SPLIT_MARGIN, Scheduler, plan};
-use rget_next::storage::{RangeRecord, RangeState};
+use rget::scheduler::{MIN_SPLIT_TAIL, SPLIT_MARGIN, Scheduler, plan};
+use rget::storage::{RangeRecord, RangeState};
 
 struct Rng(u64);
 

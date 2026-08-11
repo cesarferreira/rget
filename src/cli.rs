@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use url::Url;
 
+use crate::config;
 use crate::engine::{self, DownloadRequest};
 use crate::fmt;
 use crate::http::{DEFAULT_USER_AGENT, HttpConfig};
@@ -36,7 +37,8 @@ const MAX_CONNECTIONS: usize = 64;
         rget URL --connections 16 --sha256 <digest>\n  \
         rget https://mirror1/f.iso https://mirror2/f.iso --sha256 <digest>\n  \
         rget list\n  \
-        rget resume --all"
+        rget resume --all\n  \
+        rget config --dir ~/Downloads"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -79,6 +81,15 @@ pub enum Command {
     Forget {
         /// Download id, or any unambiguous prefix
         id: String,
+    },
+    /// Show or change settings
+    Config {
+        /// Set the folder downloads go to when no --dir is given
+        #[arg(long, value_name = "DIR")]
+        dir: Option<String>,
+        /// Forget the saved folder, so the next download asks again
+        #[arg(long, conflicts_with = "dir")]
+        reset: bool,
     },
 }
 
@@ -283,6 +294,10 @@ pub async fn dispatch(cli: Cli) -> Result<i32> {
             cmd_forget(&store, id)?;
             Ok(EXIT_OK)
         }
+        Some(Command::Config { dir, reset }) => {
+            cmd_config(&store, dir.as_deref(), *reset, cli.json)?;
+            Ok(EXIT_OK)
+        }
         Some(Command::Resume { id, all }) => cmd_resume(&store, &cli, id.as_deref(), *all).await,
         None => {
             if cli.get.urls.is_empty() {
@@ -293,10 +308,35 @@ pub async fn dispatch(cli: Cli) -> Result<i32> {
                 return Ok(EXIT_FAILURE);
             }
             let urls = cli.get.parse_urls()?;
-            let request = cli.get.to_request(urls)?;
+            let mut request = cli.get.to_request(urls)?;
+            // Ask where downloads go, once, before anything touches the network.
+            request.dir = Some(resolve_dir(&store, &cli)?);
             run_download(store, request, &cli).await
         }
     }
+}
+
+/// Settle the destination folder: `--dir`, else the saved setting, else ask
+/// (first run only), else the platform's Downloads folder.
+fn resolve_dir(store: &Store, cli: &Cli) -> Result<String> {
+    let machine_output = cli.json || cli.quiet;
+    let resolved = config::resolve_download_dir(store, cli.get.dir.as_deref(), |default| {
+        config::prompt_for_download_dir(default, machine_output)
+    })?;
+
+    if cli.verbose {
+        eprintln!(
+            "  downloading into {} ({})",
+            config::tildify(&resolved.path),
+            match resolved.source {
+                config::DirSource::Flag => "--dir",
+                config::DirSource::Saved => "saved setting",
+                config::DirSource::Prompted => "just chosen",
+                config::DirSource::PlatformDefault => "platform default",
+            }
+        );
+    }
+    Ok(resolved.path.to_string_lossy().to_string())
 }
 
 /// Run one download with a UI attached and signals wired up.
@@ -478,6 +518,46 @@ fn cmd_info(store: &Store, id: &str, json: bool) -> Result<()> {
     if let Some(err) = &record.error {
         println!("  last error    {err}");
     }
+    Ok(())
+}
+
+fn cmd_config(store: &Store, dir: Option<&str>, reset: bool, json: bool) -> Result<()> {
+    if reset {
+        store.clear_meta(config::DOWNLOAD_DIR_KEY)?;
+        println!("Forgot the saved download folder; the next download will ask again.");
+        return Ok(());
+    }
+
+    if let Some(dir) = dir {
+        let path = config::normalise_dir(dir)?;
+        config::save_download_dir(store, &path)?;
+        println!("Downloads will be saved to {}", config::tildify(&path));
+        return Ok(());
+    }
+
+    let saved = config::saved_download_dir(store)?;
+    let effective = saved.clone().unwrap_or_else(config::platform_download_dir);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "download_dir": effective.to_string_lossy(),
+                "download_dir_is_saved": saved.is_some(),
+                "platform_default": config::platform_download_dir().to_string_lossy(),
+                "state_database": store.path().to_string_lossy(),
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("  download folder   {}", config::tildify(&effective));
+    if saved.is_none() {
+        println!("                    (platform default; not saved yet)");
+    }
+    println!("  state database    {}", store.path().display());
+    println!();
+    println!("Change it with `rget config --dir <path>`, or `--reset` to be asked again.");
     Ok(())
 }
 

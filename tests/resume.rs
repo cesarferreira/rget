@@ -459,7 +459,7 @@ async fn sigint_pauses_and_saves_progress() {
 
     let store = ws.store();
     let record = &store.list().unwrap()[0];
-    assert_eq!(record.status, rget_next::storage::Status::Paused);
+    assert_eq!(record.status, rget::storage::Status::Paused);
     assert!(record.durable_bytes > 0);
 
     // And the same command resumes it.

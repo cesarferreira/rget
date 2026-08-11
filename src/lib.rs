@@ -5,6 +5,7 @@
 //! | module | responsibility |
 //! |---|---|
 //! | [`cli`] | argument parsing, command dispatch |
+//! | [`config`] | user settings and the first-run download-folder prompt |
 //! | [`http`] | requests, redirects, metadata probing, range requests |
 //! | [`engine`] | orchestration: probe → plan → transfer → verify |
 //! | [`scheduler`] | range planning, worker assignment, dynamic splitting |
@@ -24,6 +25,7 @@
 //! `docs/CRASH_CONSISTENCY.md`.
 
 pub mod cli;
+pub mod config;
 pub mod engine;
 pub mod error;
 pub mod file;
