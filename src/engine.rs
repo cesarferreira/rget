@@ -35,6 +35,19 @@ use crate::worker::{self, WorkerCtx, WorkerOutcome};
 /// How often the committer runs its durability barrier. This is the maximum
 /// amount of work a crash can cost us.
 const COMMIT_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Benchmark-only override for [`COMMIT_INTERVAL`], in milliseconds. Lets a
+/// measurement price the durability barrier without a rebuild; unset or
+/// unparseable means the default.
+fn commit_interval() -> Duration {
+    match std::env::var("RGET_BENCH_COMMIT_INTERVAL_MS") {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(ms) => Duration::from_millis(ms),
+            Err(_) => COMMIT_INTERVAL,
+        },
+        Err(_) => COMMIT_INTERVAL,
+    }
+}
 /// How long we wait for workers to notice cancellation before committing
 /// anyway. PRD §26: do not wait indefinitely.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
@@ -682,9 +695,10 @@ async fn commit_loop(
     initial_range_count: usize,
 ) {
     let mut known_ranges = initial_range_count;
+    let interval = commit_interval();
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(COMMIT_INTERVAL) => {}
+            _ = tokio::time::sleep(interval) => {}
             _ = cancel.cancelled() => break,
         }
         match checkpoint(&store, &id, &file, &scheduler, &reporter, known_ranges).await {
