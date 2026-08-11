@@ -542,6 +542,49 @@ mod tests {
     }
 
     #[test]
+    fn an_idle_worker_steals_from_the_range_furthest_behind() {
+        // With one range per connection there is no spare pending work, so
+        // stealing is the *entire* rebalancing mechanism -- this is what the
+        // plan's 4x oversubscription used to provide. A fast connection that
+        // finishes early must be able to take work off a slow one, or a single
+        // straggler decides the download's wall clock.
+        let total = 256 << 20;
+        let s = Scheduler::from_ranges(&plan(total, 4));
+        let mut leases = Vec::new();
+        for _ in 0..4 {
+            let (lease, split) = s.acquire().expect("a pending range");
+            assert!(split.is_none(), "no split while pending work remains");
+            leases.push(lease);
+        }
+
+        // Three connections finish. The fourth has barely started.
+        for lease in &leases[..3] {
+            s.complete(lease.idx);
+        }
+        let straggler = &leases[3];
+        straggler.publish_progress(1 << 20);
+
+        let (stolen, split) = s
+            .acquire()
+            .expect("an idle worker must be able to steal from the straggler");
+        let split = split.expect("the only work left is inside a leased range");
+        assert_eq!(split.shrunk.idx, straggler.idx);
+
+        // The stolen tail must start beyond where the victim could still be
+        // writing, and stay inside what the victim originally owned.
+        assert!(
+            stolen.start > straggler.start + straggler.progress(),
+            "stole bytes the victim may still write"
+        );
+        assert!(stolen.end() <= straggler.start + (total / 4) - 1);
+        assert_eq!(
+            straggler.end(),
+            stolen.start - 1,
+            "the victim's ceiling must drop to meet the stolen tail"
+        );
+    }
+
+    #[test]
     fn primed_plan_pins_its_first_range_to_the_primed_bytes() {
         let total = 64 << 20;
         let primed = MIN_CHUNK;
