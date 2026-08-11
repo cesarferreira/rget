@@ -162,6 +162,10 @@ pub struct Primed {
     /// rather than discarded. `None` when the probe had to fall back and the
     /// caller should issue ordinary requests for everything.
     pub body: Option<Response>,
+    /// How many bytes `body` covers, counted from 0. The plan pins its first
+    /// range to exactly this so nothing is wasted and nothing is fetched twice.
+    /// Zero when there is no body.
+    pub body_len: u64,
 }
 
 /// Probe *and* start the download in a single request.
@@ -180,10 +184,28 @@ pub struct Primed {
 ///   body still starts at byte 0, so it still primes the transfer. Whether we
 ///   may *also* issue ranged requests is then down to `Accept-Ranges`.
 /// - anything else — fall back to [`plain_probe`] and hand back no body.
-pub async fn probe_priming(client: &Client, url: &Url) -> Result<Primed, TransferError> {
+///
+/// `prime` bounds how much of the file the probe asks for.
+///
+/// `None` means `bytes=0-` — the whole file — which is right when one connection
+/// is going to transfer all of it anyway. `Some(n)` asks for the first `n` bytes,
+/// which is what a parallel download wants: the body is then exactly the first
+/// range of the plan (see [`crate::scheduler::plan_primed`]) and nothing the
+/// server sends is discarded. An open-ended prime in a parallel download would
+/// stream the entire file down a connection whose worker stops at the first
+/// chunk boundary, wasting 3–8% of the transfer.
+pub async fn probe_priming(
+    client: &Client,
+    url: &Url,
+    prime: Option<u64>,
+) -> Result<Primed, TransferError> {
+    let spec = match prime {
+        Some(n) if n > 0 => format!("bytes=0-{}", n - 1),
+        _ => "bytes=0-".to_string(),
+    };
     let resp = client
         .get(url.clone())
-        .header(RANGE, "bytes=0-")
+        .header(RANGE, spec)
         .send()
         .await
         .map_err(|e| TransferError::from_reqwest(&e))?;
@@ -194,21 +216,26 @@ pub async fn probe_priming(client: &Client, url: &Url) -> Result<Primed, Transfe
         match parse_content_range(header(&resp, CONTENT_RANGE).as_deref()) {
             // The body must actually begin where we asked, or it cannot prime
             // the transfer no matter how well-formed the header is.
-            Some((0, _, total)) => {
+            Some((0, end, total)) => {
                 let mut info = info_from(&resp, total);
                 info.accept_ranges = true;
                 return Ok(Primed {
                     info,
                     body: Some(resp),
+                    // Trust the range the server actually served, not the one we
+                    // asked for: it is free to return fewer bytes.
+                    body_len: end + 1,
                 });
             }
             _ => {
                 tracing::warn!(
-                    "server answered bytes=0- with an unusable Content-Range; disabling parallelism"
+                    "server answered our priming range with an unusable Content-Range; \
+                     disabling parallelism"
                 );
                 return Ok(Primed {
                     info: plain_probe(client, url).await?,
                     body: None,
+                    body_len: 0,
                 });
             }
         }
@@ -225,6 +252,9 @@ pub async fn probe_priming(client: &Client, url: &Url) -> Result<Primed, Transfe
         return Ok(Primed {
             info,
             body: Some(resp),
+            // The server ignored `Range` and sent the whole representation, so
+            // the body covers everything and there is no boundary to pin.
+            body_len: len.unwrap_or(0),
         });
     }
 
@@ -238,6 +268,7 @@ pub async fn probe_priming(client: &Client, url: &Url) -> Result<Primed, Transfe
         return Ok(Primed {
             info: plain_probe(client, url).await?,
             body: None,
+            body_len: 0,
         });
     }
 

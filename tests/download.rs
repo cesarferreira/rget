@@ -68,6 +68,38 @@ async fn downloads_in_parallel_and_reassembles_exactly() {
 }
 
 #[tokio::test]
+async fn a_parallel_download_fetches_each_byte_exactly_once() {
+    let ws = Workspace::new("nooverfetch");
+    let server = Server::start(Config::with_body(40 << 20)).await;
+    let body = server.body();
+
+    let mut req = request(&server, "/parallel.bin", &ws);
+    req.connections = 4;
+
+    let (result, _) = run(&ws, req).await;
+    let report = result.expect("download should succeed");
+    assert_eq!(std::fs::read(&report.path).unwrap(), body);
+
+    // The priming probe asks for a bounded range and the plan pins its first
+    // range to exactly those bytes. An open-ended probe would instead stream the
+    // whole file down a connection whose worker stops at the first chunk
+    // boundary, and everything the server raced ahead would be paid for and
+    // thrown away -- 3-8% of the transfer, which is real money on metered egress.
+    // Counted as bytes the server actually wrote, so an abandoned response shows
+    // up whichever way it lands: extra bytes raced ahead before the connection
+    // dropped, or a short write when it dropped mid-body.
+    let stats = server.stats();
+    assert_eq!(
+        stats.bytes_served,
+        body.len(),
+        "server wrote {} bytes for a {} byte file ({} more than the file)",
+        stats.bytes_served,
+        body.len(),
+        stats.bytes_served as i64 - body.len() as i64
+    );
+}
+
+#[tokio::test]
 async fn the_probe_costs_no_extra_request() {
     let ws = Workspace::new("priming");
     let server = Server::start(Config::with_body(512 * 1024)).await;
@@ -132,15 +164,21 @@ async fn falls_back_to_sequential_without_range_support() {
     let report = result.expect("sequential fallback should need no intervention");
     assert_eq!(std::fs::read(&report.path).unwrap(), body);
 
-    // The priming probe asks for `bytes=0-`, which is the only range this
-    // server may ever see: once we know ranges do not work, no transfer may ask
-    // for one. `bytes=0-` is also indistinguishable from a plain GET in cost --
-    // the server answers 200 with the whole body -- so a range-less download
-    // costs exactly one request, the same as wget's.
+    // The priming probe's range is the only one this server may ever see: once
+    // we know ranges do not work, no transfer may ask for one. The probe costs
+    // nothing extra either -- a server that ignores `Range` answers 200 with the
+    // whole body, which we transfer -- so a range-less download costs exactly
+    // one request, the same as wget's.
     let stats = server.stats();
-    assert!(
-        stats.ranges.iter().all(|r| *r == (0, None)),
-        "transfer sent a real range to a server that does not support it: {:?}",
+    assert_eq!(
+        stats.ranges.len(),
+        1,
+        "only the priming probe may send a range here, saw: {:?}",
+        stats.ranges
+    );
+    assert_eq!(
+        stats.ranges[0].0, 0,
+        "the priming probe must start at byte 0, saw: {:?}",
         stats.ranges
     );
     assert_eq!(
