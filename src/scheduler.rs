@@ -68,6 +68,50 @@ pub fn plan(total: u64, connections: usize) -> Vec<RangeRecord> {
     ranges
 }
 
+/// A plan whose first range is exactly the bytes the priming probe already has
+/// in flight, so none of them are wasted and none are fetched twice.
+///
+/// The probe opens a bounded range rather than the whole file precisely so this
+/// is possible: an open-ended primed body would stream the entire file down a
+/// connection whose worker stops at the first chunk boundary, throwing away
+/// everything the server raced ahead. Pinning the boundary to what was actually
+/// requested makes the waste zero.
+///
+/// The remainder is split across the *other* connections, so the total request
+/// count stays at one per connection — the whole point of [`chunk_size`].
+pub fn plan_primed(total: u64, connections: usize, primed: u64) -> Vec<RangeRecord> {
+    // A primed body covering everything (or nothing) has no boundary to pin.
+    if total == 0 || primed == 0 || primed >= total {
+        return plan(total, connections);
+    }
+
+    let mut ranges = vec![RangeRecord {
+        idx: 0,
+        start: 0,
+        end: primed - 1,
+        state: RangeState::Pending,
+        bytes_written: 0,
+    }];
+
+    let rest = total - primed;
+    let chunk = chunk_size(rest, connections.saturating_sub(1).max(1));
+    let mut start = primed;
+    let mut idx = 1u64;
+    while start < total {
+        let end = (start + chunk - 1).min(total - 1);
+        ranges.push(RangeRecord {
+            idx,
+            start,
+            end,
+            state: RangeState::Pending,
+            bytes_written: 0,
+        });
+        start = end + 1;
+        idx += 1;
+    }
+    ranges
+}
+
 /// The single-range plan used when the server has no usable `Range` support or
 /// never told us the size (PRD §6: the fallback needs no user intervention).
 pub fn plan_sequential(total: Option<u64>) -> Vec<RangeRecord> {
@@ -480,6 +524,37 @@ mod tests {
         assert_eq!(chunk_size(u64::MAX, 8), MAX_CHUNK);
         let c = chunk_size(10 << 30, 8);
         assert!((MIN_CHUNK..=MAX_CHUNK).contains(&c));
+    }
+
+    #[test]
+    fn primed_plan_pins_its_first_range_to_the_primed_bytes() {
+        let total = 64 << 20;
+        let primed = MIN_CHUNK;
+        let ranges = plan_primed(total, 4, primed);
+
+        // The first range must be exactly what the probe already has in flight,
+        // or those bytes are either wasted or fetched twice.
+        assert_eq!(ranges[0].start, 0);
+        assert_eq!(ranges[0].end, primed - 1);
+
+        // Still a contiguous, gapless partition of the whole file.
+        for pair in ranges.windows(2) {
+            assert_eq!(pair[1].start, pair[0].end + 1, "gap or overlap in the plan");
+        }
+        assert_eq!(ranges.last().unwrap().end, total - 1);
+        for (i, r) in ranges.iter().enumerate() {
+            assert_eq!(r.idx, i as u64);
+        }
+    }
+
+    #[test]
+    fn primed_plan_falls_back_when_there_is_no_boundary_to_pin() {
+        let total = 64 << 20;
+        // A body covering the whole file, or none of it, leaves nothing to pin.
+        assert_eq!(plan_primed(total, 4, 0), plan(total, 4));
+        assert_eq!(plan_primed(total, 4, total), plan(total, 4));
+        assert_eq!(plan_primed(total, 4, total + 1), plan(total, 4));
+        assert!(plan_primed(0, 4, MIN_CHUNK).is_empty());
     }
 
     #[test]

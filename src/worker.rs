@@ -5,8 +5,8 @@
 //! is `connections × chunk`, independent of file size — a 500 GB download costs
 //! the same as a 5 GB one.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use reqwest::Client;
@@ -42,6 +42,32 @@ pub struct WorkerCtx {
     /// real size by reaching the end of the body.
     pub discovered_size: Arc<AtomicU64>,
     pub cancel: Cancel,
+    /// The response the priming probe left open, whose body starts at byte 0.
+    /// Whichever worker first picks up a lease sitting at byte 0 transfers it
+    /// instead of opening a redundant connection. Taken at most once.
+    pub primed: Mutex<Option<PrimedBody>>,
+}
+
+/// A live response body from [`crate::http::probe_priming`], tagged with the URL
+/// it came from so it can never be spliced into a different source's range.
+pub struct PrimedBody {
+    pub url: url::Url,
+    pub response: reqwest::Response,
+}
+
+impl WorkerCtx {
+    /// Claim the primed body, but only for a request that it actually answers:
+    /// the same URL, starting at the same byte.
+    fn take_primed(&self, url: &url::Url, start: u64) -> Option<reqwest::Response> {
+        if start != 0 {
+            return None;
+        }
+        let mut slot = self.primed.lock().unwrap_or_else(|e| e.into_inner());
+        match slot.as_ref() {
+            Some(primed) if &primed.url == url => slot.take().map(|p| p.response),
+            _ => None,
+        }
+    }
 }
 
 /// Outcome of a worker's whole run.
@@ -201,15 +227,22 @@ async fn attempt(
         (0, None)
     };
 
-    let mut resp = crate::http::get_range(
-        &ctx.client,
-        url,
-        req_start,
-        req_end,
-        validator,
-        ctx.expected_total,
-    )
-    .await?;
+    // The priming probe already opened a body starting at byte 0. Using it here
+    // is what makes a fresh download cost exactly as many requests as wget's.
+    let mut resp = match ctx.take_primed(url, req_start) {
+        Some(primed) => primed,
+        None => {
+            crate::http::get_range(
+                &ctx.client,
+                url,
+                req_start,
+                req_end,
+                validator,
+                ctx.expected_total,
+            )
+            .await?
+        }
+    };
 
     ctx.reporter.stats.connection_opened();
     // Guard so every early return below decrements the gauge exactly once.
