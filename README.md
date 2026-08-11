@@ -76,12 +76,17 @@ rget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.7.tar.xz
 ```
 
 ```
-linux-6.7.tar.xz
-  74.2 MiB / 135 MiB   55.0%
-  91.5 MiB/s           ETA 1s
-  8 connections        18/33 chunks
-███████████████████████░░░░░░░░░░░░░░░░░ 55%
+  ↓ linux-6.7.tar.xz
+  █████████████████████████▍░░░░░░░░░░░░░░░░░░   58.0%
+  78.3 MiB / 135 MiB · 91.5 MiB/s · ETA 1s
+  8 connections · 18/32 chunks
 ```
+
+The bar advances in eighth-of-a-character steps, so it moves smoothly rather
+than jumping a whole cell at a time, and the block redraws in place instead of
+scrolling. Colour is on when stderr is a terminal and off otherwise — piping, or
+setting [`NO_COLOR`](https://no-color.org), gives you clean text with no escape
+codes at all.
 
 The first time you run it, `rget` asks where downloads should go, prefilled with
 your system's Downloads folder:
@@ -101,12 +106,11 @@ behaves identically to a terminal.
 no `.part` files to clean up:
 
 ```
-Resuming linux-6.7.tar.xz
-36.70 MiB / 135 MiB already downloaded
-✓ Checksum verified
-✓ linux-6.7.tar.xz
-  135 MiB downloaded in 5s
-  Average speed: 16.4 MiB/s
+⟳ Resuming linux-6.7.tar.xz
+  36.70 MiB of 135 MiB already downloaded
+  ✓ SHA-256 verified
+  ✓ linux-6.7.tar.xz
+    135 MiB · in 5s · 26.4 MiB/s average
 ```
 
 That survives Ctrl+C, `SIGKILL`, a dropped network, a closed terminal and a
@@ -135,6 +139,16 @@ rget URL --header 'Authorization: Bearer …' --header 'X-Trace: 1'
 ```
 
 ### Managing downloads
+
+`rget list` shows the same bar per download, with the status colour-coded so a
+long list reads at a glance:
+
+```
+ID       FILE                       PROGRESS          STATUS
+58a243   linux-6.7.tar.xz           ██████████  100%  complete
+9f21bc   dataset.tar                ████░░░░░░   42%  paused
+17ef21   model.bin                  ███████░░░   71%  failed
+```
 
 ```bash
 rget config           # where downloads go, and where state lives

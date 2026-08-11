@@ -172,17 +172,48 @@ pub async fn download(
     }
 
     // -- 4. open the file, then check it is *our* file -------------------
+    //
+    // Look at what is on disk *before* opening: opening creates the file, which
+    // would make "the user deleted it" indistinguishable from "something
+    // replaced it".
+    let bytes_on_disk = std::fs::metadata(&dest.path).ok().map(|m| m.len());
     let file = Arc::new(DestFile::open(&dest.path)?);
     let file_len = file.size()?;
-    let had_progress = record.durable_bytes > 0;
+    let mut had_progress = record.durable_bytes > 0;
+
+    if had_progress && bytes_on_disk.unwrap_or(0) == 0 {
+        // The file is gone, or empty. Either way there are no bytes to protect,
+        // so deleting it is a perfectly good way of saying "start over" — and
+        // refusing would leave the user stuck with a download they cannot run
+        // and cannot obviously fix.
+        reporter.warn(format!(
+            "{} {}, so there is nothing to resume; starting over",
+            dest.path.display(),
+            if bytes_on_disk.is_none() {
+                "was removed"
+            } else {
+                "is empty"
+            }
+        ));
+        store.reset(&record.id)?;
+        record = store
+            .get(&record.id)?
+            .ok_or_else(|| anyhow!("download record vanished"))?;
+        had_progress = false;
+    }
 
     if had_progress {
         match resume::check_identity(&record, &file) {
             Identity::Same => {}
+            // The file exists, holds data, and is not the one we were writing
+            // to. Its contents are somebody's, so we do not touch them.
             Identity::Replaced => bail!(
-                "{} is not the file this download was writing to (it was replaced or recreated).\n\
-                 Use --restart to download it again, or --output <different-name>.",
-                dest.path.display()
+                "{} holds {} but is not the file this download was writing to.\n\
+                 It was replaced or recreated by something else since the last run.\n\
+                 Use --restart to download it again, --output <different-name> to keep both,\n\
+                 or delete the file if you do not need it.",
+                dest.path.display(),
+                crate::fmt::bytes(bytes_on_disk.unwrap_or(0)),
             ),
             Identity::Unrecorded => {
                 reporter.warn("no recorded file identity for this download; relying on size checks")

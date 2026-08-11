@@ -438,18 +438,62 @@ fn cmd_list(store: &Store, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<8} {:<24} {:>8}  STATUS", "ID", "FILE", "PROGRESS");
+    let style = fmt::Style::stdout();
+    println!("{}", list_header(&style));
     for d in downloads {
-        let progress = match d.total_size {
-            Some(total) if total > 0 => {
-                format!("{:.0}%", (d.durable_bytes as f64 / total as f64) * 100.0)
-            }
-            _ => "--".to_string(),
-        };
-        let name = truncate(&d.filename, 24);
-        println!("{:<8} {:<24} {:>8}  {}", d.id, name, progress, d.status);
+        println!("{}", list_row(&d, &style));
     }
     Ok(())
+}
+
+// Column widths, shared by the header and the rows so they cannot drift apart.
+const ID_W: usize = 8;
+const NAME_W: usize = 26;
+const BAR_W: usize = 10;
+const PCT_W: usize = 5;
+
+fn list_header(style: &fmt::Style) -> String {
+    style.dim(&format!(
+        "{:<ID_W$} {:<NAME_W$} {:<BAR_W$} {:<PCT_W$}  STATUS",
+        "ID", "FILE", "PROGRESS", ""
+    ))
+}
+
+fn list_row(d: &DownloadRecord, style: &fmt::Style) -> String {
+    let pct = match d.total_size {
+        Some(total) if total > 0 => {
+            format!("{:.0}%", (d.durable_bytes as f64 / total as f64) * 100.0)
+        }
+        _ => "--".to_string(),
+    };
+    // A miniature version of the download bar, so a glance down the column
+    // tells you how far along everything is.
+    let (filled, empty) = fmt::bar_parts(d.durable_bytes, d.total_size, BAR_W);
+    // Pad *before* styling: ANSI escapes have length but occupy no columns, so
+    // `{:<8}` applied to an already-coloured string silently does nothing.
+    format!(
+        "{} {} {}{} {:>PCT_W$}  {}",
+        style.dim(&format!("{:<ID_W$}", d.id)),
+        format_args!("{:<NAME_W$}", truncate(&d.filename, NAME_W)),
+        style.bright_green(&filled),
+        style.dim(&empty),
+        pct,
+        colour_status(style, d.status),
+    )
+}
+
+/// Status colours are the fastest way to read a long list: green is done,
+/// yellow is waiting for you, red needs attention.
+fn colour_status(style: &fmt::Style, status: Status) -> String {
+    let text = status.as_str();
+    match status {
+        Status::Complete => style.green(text),
+        Status::Downloading => style.bright_cyan(text),
+        Status::Verifying => style.cyan(text),
+        Status::Paused => style.yellow(text),
+        Status::Failed => style.red(text),
+        Status::Pending => style.dim(text),
+    }
 }
 
 fn cmd_info(store: &Store, id: &str, json: bool) -> Result<()> {
@@ -467,56 +511,79 @@ fn cmd_info(store: &Store, id: &str, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{}  {}", record.id, record.filename);
-    println!("  status        {}", record.status);
-    println!("  url           {}", record.original_url);
+    let style = fmt::Style::stdout();
+    let field = |label: &str, value: &str| {
+        println!("  {} {value}", style.dim(&format!("{label:<13}")));
+    };
+
+    println!(
+        "{}  {}",
+        style.dim(&record.id),
+        style.bold(&record.filename)
+    );
+    field("status", &colour_status(&style, record.status));
+    field("url", &record.original_url);
     if let Some(resolved) = &record.resolved_url {
         if resolved != &record.original_url {
-            println!("  resolved      {resolved}");
+            field("resolved", &style.dim(resolved));
         }
     }
     for mirror in &record.mirrors {
-        println!("  mirror        {mirror}");
+        field("mirror", &style.dim(mirror));
     }
-    println!("  destination   {}", record.destination);
-    println!(
-        "  size          {}",
-        record
+    field("destination", &record.destination);
+    field(
+        "size",
+        &record
             .total_size
             .map(fmt::bytes)
-            .unwrap_or_else(|| "unknown".into())
+            .unwrap_or_else(|| "unknown".into()),
     );
-    println!(
-        "  downloaded    {} ({})",
-        fmt::bytes(record.durable_bytes),
-        match record.total_size {
-            Some(t) if t > 0 => format!("{:.1}%", (record.durable_bytes as f64 / t as f64) * 100.0),
-            _ => "--".into(),
-        }
+
+    let pct = match record.total_size {
+        Some(t) if t > 0 => (record.durable_bytes as f64 / t as f64) * 100.0,
+        _ => 0.0,
+    };
+    let (filled, empty) = fmt::bar_parts(record.durable_bytes, record.total_size, 20);
+    field(
+        "downloaded",
+        &format!(
+            "{}{}  {}  {}",
+            style.bright_green(&filled),
+            style.dim(&empty),
+            style.bold(&format!("{pct:.1}%")),
+            style.dim(&fmt::bytes(record.durable_bytes)),
+        ),
     );
-    println!(
-        "  ranges        {} total, {} complete",
-        ranges.len(),
-        ranges
-            .iter()
-            .filter(|r| r.state == RangeState::Complete)
-            .count()
-    );
-    println!(
-        "  resumable     {}",
-        if record.accept_ranges { "yes" } else { "no" }
+
+    let complete = ranges
+        .iter()
+        .filter(|r| r.state == RangeState::Complete)
+        .count();
+    field(
+        "ranges",
+        &format!(
+            "{} {} {}",
+            style.magenta(&format!("{complete}/{}", ranges.len())),
+            style.dim("complete ·"),
+            style.dim(if record.accept_ranges {
+                "server supports resuming"
+            } else {
+                "server cannot resume"
+            }),
+        ),
     );
     if let Some(etag) = &record.etag {
-        println!("  etag          {etag}");
+        field("etag", etag);
     }
     if let Some(lm) = &record.last_modified {
-        println!("  last-modified {lm}");
+        field("last-modified", lm);
     }
     if let (Some(algo), Some(digest)) = (&record.checksum_algorithm, &record.expected_checksum) {
-        println!("  {algo}        {digest}");
+        field(algo, &style.dim(digest));
     }
     if let Some(err) = &record.error {
-        println!("  last error    {err}");
+        field("last error", &style.red(err));
     }
     Ok(())
 }
@@ -524,14 +591,23 @@ fn cmd_info(store: &Store, id: &str, json: bool) -> Result<()> {
 fn cmd_config(store: &Store, dir: Option<&str>, reset: bool, json: bool) -> Result<()> {
     if reset {
         store.clear_meta(config::DOWNLOAD_DIR_KEY)?;
-        println!("Forgot the saved download folder; the next download will ask again.");
+        let style = fmt::Style::stdout();
+        println!(
+            "{} Forgot the saved download folder; the next download will ask again.",
+            style.bold_green("✓")
+        );
         return Ok(());
     }
 
     if let Some(dir) = dir {
         let path = config::normalise_dir(dir)?;
         config::save_download_dir(store, &path)?;
-        println!("Downloads will be saved to {}", config::tildify(&path));
+        let style = fmt::Style::stdout();
+        println!(
+            "{} Downloads will be saved to {}",
+            style.bold_green("✓"),
+            style.bold(&config::tildify(&path))
+        );
         return Ok(());
     }
 
@@ -551,22 +627,43 @@ fn cmd_config(store: &Store, dir: Option<&str>, reset: bool, json: bool) -> Resu
         return Ok(());
     }
 
-    println!("  download folder   {}", config::tildify(&effective));
-    if saved.is_none() {
-        println!("                    (platform default; not saved yet)");
-    }
-    println!("  state database    {}", store.path().display());
+    let style = fmt::Style::stdout();
+    println!(
+        "  {} {}{}",
+        style.dim("download folder  "),
+        style.bold(&config::tildify(&effective)),
+        if saved.is_none() {
+            style.dim("  (platform default; not saved yet)")
+        } else {
+            String::new()
+        }
+    );
+    println!(
+        "  {} {}",
+        style.dim("state database   "),
+        style.dim(&store.path().display().to_string())
+    );
     println!();
-    println!("Change it with `rget config --dir <path>`, or `--reset` to be asked again.");
+    println!(
+        "{}",
+        style.dim("Change it with `rget config --dir <path>`, or `--reset` to be asked again.")
+    );
     Ok(())
 }
 
 fn cmd_forget(store: &Store, id: &str) -> Result<()> {
     let record = store.resolve_id(id)?;
     store.forget(&record.id)?;
+    let style = fmt::Style::stdout();
     println!(
-        "Forgot {} ({}). The file at {} was left alone.",
-        record.id, record.filename, record.destination
+        "{} Forgot {} ({}){}",
+        style.bold_green("✓"),
+        style.dim(&record.id),
+        style.bold(&record.filename),
+        style.dim(&format!(
+            "\n  the file at {} was left alone",
+            record.destination
+        ))
     );
     Ok(())
 }
@@ -769,6 +866,112 @@ mod tests {
         assert!(cli.get.to_request(vec![]).unwrap().preallocate);
         let cli = parse(&["rget", "https://a/f", "--no-preallocate"]);
         assert!(!cli.get.to_request(vec![]).unwrap().preallocate);
+    }
+
+    /// Remove ANSI sequences so we can measure what the terminal actually
+    /// shows, rather than how many bytes we wrote.
+    fn visible(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for c in chars.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Column (not byte) at which `needle` starts. The bar glyphs are three
+    /// bytes each, so byte offsets would be meaningless here.
+    fn column_of(line: &str, needle: &str) -> Option<usize> {
+        let byte = line.find(needle)?;
+        Some(line[..byte].chars().count())
+    }
+
+    fn listed(id: &str, filename: &str, total: Option<u64>, done: u64) -> DownloadRecord {
+        DownloadRecord {
+            id: id.into(),
+            original_url: "https://x.example/f".into(),
+            resolved_url: None,
+            mirrors: vec![],
+            destination: "/tmp/f".into(),
+            filename: filename.into(),
+            total_size: total,
+            etag: None,
+            last_modified: None,
+            content_type: None,
+            accept_ranges: true,
+            expected_checksum: None,
+            checksum_algorithm: None,
+            file_cookie: "cookie".into(),
+            file_dev: None,
+            file_ino: None,
+            durable_bytes: done,
+            status: Status::Paused,
+            error: None,
+            created_at: 0,
+            updated_at: 0,
+            completed_at: None,
+        }
+    }
+
+    /// Padding an already-coloured string is a silent no-op, because escape
+    /// sequences have length but occupy no columns. This is the guard against
+    /// that whole class of bug.
+    #[test]
+    fn list_columns_line_up_with_colour_on() {
+        let style = fmt::Style::new(true);
+        if !style.is_enabled() {
+            return; // NO_COLOR set in this environment.
+        }
+        let header = visible(&list_header(&style));
+        let status_col = column_of(&header, "STATUS").expect("header has a STATUS column");
+
+        for record in [
+            listed("ab12cd", "short.iso", Some(1000), 500),
+            listed(
+                "ef34gh",
+                "a-considerably-longer-filename.tar.gz",
+                Some(1 << 30),
+                0,
+            ),
+            listed("ij56kl", "unknown-size.bin", None, 0),
+            listed("mn78op", "done.bin", Some(10), 10),
+        ] {
+            let row = visible(&list_row(&record, &style));
+            let plain_row = visible(&list_row(&record, &fmt::Style::new(false)));
+            assert_eq!(
+                row, plain_row,
+                "styled and unstyled rows must occupy identical columns"
+            );
+            let status = visible(&colour_status(&style, record.status));
+            let at = column_of(&row, &status).expect("row has a status");
+            assert_eq!(
+                at, status_col,
+                "status column misaligned for {}: {row:?} vs header {header:?}",
+                record.filename
+            );
+        }
+    }
+
+    #[test]
+    fn list_bar_reflects_progress() {
+        let style = fmt::Style::new(false);
+        assert!(list_row(&listed("a", "f", Some(100), 0), &style).contains("░"));
+        let full = list_row(&listed("a", "f", Some(100), 100), &style);
+        assert!(full.contains("█"));
+        assert!(
+            !full.contains("░"),
+            "a finished bar should be solid: {full}"
+        );
+        // Unknown size cannot claim progress it does not know about.
+        assert!(list_row(&listed("a", "f", None, 50), &style).contains("--"));
     }
 
     #[test]

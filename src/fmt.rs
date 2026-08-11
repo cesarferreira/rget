@@ -65,20 +65,35 @@ pub fn percent(done: u64, total: Option<u64>) -> String {
     }
 }
 
-pub fn bar(done: u64, total: Option<u64>, width: usize) -> String {
+/// Eighth-width blocks, so the bar creeps forward smoothly instead of jumping a
+/// whole cell at a time — the difference between a bar that looks alive and one
+/// that looks stuck.
+const PARTIALS: [char; 8] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
+
+/// The filled and empty halves of a progress bar, separate so the caller can
+/// colour them independently. Together they are always exactly `width` cells.
+pub fn bar_parts(done: u64, total: Option<u64>, width: usize) -> (String, String) {
     let frac = match total {
         Some(t) if t > 0 => (done as f64 / t as f64).clamp(0.0, 1.0),
         _ => 0.0,
     };
-    let filled = (frac * width as f64).round() as usize;
-    let mut s = String::with_capacity(width * 3);
-    for _ in 0..filled {
-        s.push('█');
+    let exact = frac * width as f64;
+    let whole = (exact.floor() as usize).min(width);
+
+    let mut filled = "█".repeat(whole);
+    let mut used = whole;
+    let remainder = exact - whole as f64;
+    if used < width && remainder > 0.02 {
+        let idx = ((remainder * 8.0).round() as usize).clamp(1, 8) - 1;
+        filled.push(PARTIALS[idx]);
+        used += 1;
     }
-    for _ in filled..width {
-        s.push('░');
-    }
-    s
+    (filled, "░".repeat(width - used))
+}
+
+pub fn bar(done: u64, total: Option<u64>, width: usize) -> String {
+    let (filled, empty) = bar_parts(done, total, width);
+    format!("{filled}{empty}")
 }
 
 /// Truncate a URL for display so a signed CDN URL does not wrap the terminal.
@@ -104,8 +119,23 @@ pub struct Style {
 impl Style {
     pub fn new(enabled: bool) -> Self {
         Self {
+            // `NO_COLOR` is a promise, not a suggestion: https://no-color.org.
             enabled: enabled && std::env::var_os("NO_COLOR").is_none(),
         }
+    }
+
+    /// Styling for anything printed to stdout — `list`, `info`, `config`.
+    pub fn stdout() -> Self {
+        Self::new(std::io::IsTerminal::is_terminal(&std::io::stdout()))
+    }
+
+    /// Styling for progress and messages, which go to stderr.
+    pub fn stderr() -> Self {
+        Self::new(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
     fn wrap(&self, code: &str, text: &str) -> String {
@@ -133,6 +163,32 @@ impl Style {
     }
     pub fn cyan(&self, t: &str) -> String {
         self.wrap("36", t)
+    }
+    pub fn blue(&self, t: &str) -> String {
+        self.wrap("34", t)
+    }
+    pub fn magenta(&self, t: &str) -> String {
+        self.wrap("35", t)
+    }
+    pub fn bright_green(&self, t: &str) -> String {
+        self.wrap("92", t)
+    }
+    pub fn bright_cyan(&self, t: &str) -> String {
+        self.wrap("96", t)
+    }
+    pub fn bold_green(&self, t: &str) -> String {
+        self.wrap("1;32", t)
+    }
+    pub fn bold_red(&self, t: &str) -> String {
+        self.wrap("1;31", t)
+    }
+    pub fn bold_cyan(&self, t: &str) -> String {
+        self.wrap("1;36", t)
+    }
+
+    /// A `·` separator, always dim so it recedes behind the values it divides.
+    pub fn sep(&self) -> String {
+        self.dim(" · ")
     }
 }
 
