@@ -576,7 +576,7 @@ mod tests {
             stolen.start > straggler.start + straggler.progress(),
             "stole bytes the victim may still write"
         );
-        assert!(stolen.end() <= straggler.start + (total / 4) - 1);
+        assert!(stolen.end() < straggler.start + (total / 4));
         assert_eq!(
             straggler.end(),
             stolen.start - 1,
