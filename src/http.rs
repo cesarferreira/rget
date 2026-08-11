@@ -155,12 +155,135 @@ impl RemoteInfo {
     }
 }
 
+/// What a priming probe learned, plus the response body it opened.
+pub struct Primed {
+    pub info: RemoteInfo,
+    /// A live response whose body starts at byte 0, ready to be transferred
+    /// rather than discarded. `None` when the probe had to fall back and the
+    /// caller should issue ordinary requests for everything.
+    pub body: Option<Response>,
+    /// How many bytes `body` covers, counted from 0. The plan pins its first
+    /// range to exactly this so nothing is wasted and nothing is fetched twice.
+    /// Zero when there is no body.
+    pub body_len: u64,
+}
+
+/// Probe *and* start the download in a single request.
+///
+/// [`probe`] asks for `bytes=0-0`, reads one byte, throws it away, and only then
+/// lets the real work begin — one whole round trip of pure overhead on every
+/// download, which is why rget could never match a single-request client on a
+/// small file. This asks for `bytes=0-` instead: the reply tells us everything
+/// `probe` would have, and its body is the beginning of the file.
+///
+/// The three answers a server can give, all useful:
+///
+/// - `206` with a parseable `Content-Range` — ranges work, size known, and the
+///   first bytes are already streaming.
+/// - `200` — the server ignored `Range` and sent the whole representation. The
+///   body still starts at byte 0, so it still primes the transfer. Whether we
+///   may *also* issue ranged requests is then down to `Accept-Ranges`.
+/// - anything else — fall back to [`plain_probe`] and hand back no body.
+///
+/// `prime` bounds how much of the file the probe asks for.
+///
+/// `None` means `bytes=0-` — the whole file — which is right when one connection
+/// is going to transfer all of it anyway. `Some(n)` asks for the first `n` bytes,
+/// which is what a parallel download wants: the body is then exactly the first
+/// range of the plan (see [`crate::scheduler::plan_primed`]) and nothing the
+/// server sends is discarded. An open-ended prime in a parallel download would
+/// stream the entire file down a connection whose worker stops at the first
+/// chunk boundary, wasting 3–8% of the transfer.
+pub async fn probe_priming(
+    client: &Client,
+    url: &Url,
+    prime: Option<u64>,
+) -> Result<Primed, TransferError> {
+    let spec = match prime {
+        Some(n) if n > 0 => format!("bytes=0-{}", n - 1),
+        _ => "bytes=0-".to_string(),
+    };
+    let resp = client
+        .get(url.clone())
+        .header(RANGE, spec)
+        .send()
+        .await
+        .map_err(|e| TransferError::from_reqwest(&e))?;
+
+    let status = resp.status();
+
+    if status == StatusCode::PARTIAL_CONTENT {
+        match parse_content_range(header(&resp, CONTENT_RANGE).as_deref()) {
+            // The body must actually begin where we asked, or it cannot prime
+            // the transfer no matter how well-formed the header is.
+            Some((0, end, total)) => {
+                let mut info = info_from(&resp, total);
+                info.accept_ranges = true;
+                return Ok(Primed {
+                    info,
+                    body: Some(resp),
+                    // Trust the range the server actually served, not the one we
+                    // asked for: it is free to return fewer bytes.
+                    body_len: end + 1,
+                });
+            }
+            _ => {
+                tracing::warn!(
+                    "server answered our priming range with an unusable Content-Range; \
+                     disabling parallelism"
+                );
+                return Ok(Primed {
+                    info: plain_probe(client, url).await?,
+                    body: None,
+                    body_len: 0,
+                });
+            }
+        }
+    }
+
+    if status.is_success() {
+        let len = header(&resp, CONTENT_LENGTH).and_then(|v| v.parse::<u64>().ok());
+        let mut info = info_from(&resp, len);
+        // `info_from` already read `Accept-Ranges`. Trust it: a server that
+        // advertises ranges but answers a whole-file range with 200 is within
+        // its rights, and its ranged requests may still work. If they do not,
+        // the first ranged worker fails loudly rather than silently corrupting.
+        info.accept_ranges = info.accept_ranges && len.is_some_and(|l| l > 0);
+        return Ok(Primed {
+            info,
+            body: Some(resp),
+            // The server ignored `Range` and sent the whole representation, so
+            // the body covers everything and there is no boundary to pin.
+            body_len: len.unwrap_or(0),
+        });
+    }
+
+    if matches!(
+        status,
+        StatusCode::METHOD_NOT_ALLOWED
+            | StatusCode::NOT_IMPLEMENTED
+            | StatusCode::BAD_REQUEST
+            | StatusCode::RANGE_NOT_SATISFIABLE
+    ) {
+        return Ok(Primed {
+            info: plain_probe(client, url).await?,
+            body: None,
+            body_len: 0,
+        });
+    }
+
+    Err(status_error(&resp))
+}
+
 /// Ask the server what it has, without downloading it.
 ///
 /// A one-byte ranged `GET` rather than `HEAD`: plenty of servers and CDNs
 /// answer `HEAD` with different (or absent) headers than they answer `GET`,
 /// and a ranged `GET` tells us in one round trip whether ranges actually work
 /// — as opposed to whether the server merely claims they do.
+///
+/// Prefer [`probe_priming`] for the primary URL; this remains the right call for
+/// mirrors, where we want the metadata and emphatically not the body.
 pub async fn probe(client: &Client, url: &Url) -> Result<RemoteInfo, TransferError> {
     let resp = client
         .get(url.clone())

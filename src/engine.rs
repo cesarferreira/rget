@@ -104,9 +104,20 @@ pub async fn download(
         max_attempts: req.retries.max(1),
         ..RetryPolicy::default()
     };
-    let info = probe_with_retry(&client, &primary, &policy, &reporter, &cancel)
+    // Ask for the whole file when one connection is going to transfer it all,
+    // and for just the first range when we intend to fan out -- an open-ended
+    // primed body in a parallel download streams bytes no worker will ever read.
+    let prime = (req.connections > 1).then_some(scheduler::MIN_CHUNK);
+    let primed = probe_with_retry(&client, &primary, prime, &policy, &reporter, &cancel)
         .await
         .with_context(|| format!("cannot reach {}", http::redact(&primary)))?;
+    let info = primed.info.clone();
+    let primed_len = primed.body_len;
+    // Held until the plan exists, because only then do we know whether anything
+    // still needs byte 0. On a resume that is already past byte 0 this gets
+    // dropped, which costs one aborted response and saves nothing -- fresh
+    // downloads are the case worth optimising.
+    let mut primed_body = primed.body;
     debug!(
         url = %http::redact(&info.final_url),
         size = ?info.size,
@@ -285,7 +296,18 @@ pub async fn download(
 
     // -- 6. reconcile and plan -----------------------------------------
     let parallel = info.supports_parallel() && req.connections > 1;
-    let ranges = build_plan(&store, &record, &info, &req, file_len, parallel, &reporter)?;
+    let ranges = build_plan(
+        &store,
+        &record,
+        &info,
+        &req,
+        file_len,
+        PlanShape {
+            parallel,
+            primed_len,
+        },
+        &reporter,
+    )?;
     let resumed_bytes: u64 = ranges
         .iter()
         .map(|r| {
@@ -334,6 +356,21 @@ pub async fn download(
         parallel,
     });
 
+    // Only hand the primed body to the workers if byte 0 is still outstanding.
+    // A resume whose first range already has bytes on disk cannot splice this
+    // body in, so drop it and let the workers request what they actually need.
+    let needs_byte_zero = ranges
+        .iter()
+        .any(|r| r.start == 0 && r.state != RangeState::Complete && r.bytes_written == 0);
+    if !needs_byte_zero {
+        primed_body = None;
+    }
+    let primed_body = primed_body.map(|response| worker::PrimedBody {
+        url: info.final_url.clone(),
+        response,
+    });
+    debug!(primed = primed_body.is_some(), "priming probe body");
+
     let ctx = Arc::new(WorkerCtx {
         client: client.clone(),
         sources: sources.clone(),
@@ -347,6 +384,7 @@ pub async fn download(
         ranges_supported: info.accept_ranges,
         discovered_size: Arc::new(AtomicU64::new(0)),
         cancel: cancel.clone(),
+        primed: std::sync::Mutex::new(primed_body),
     });
 
     let committer = tokio::spawn(commit_loop(
@@ -507,17 +545,18 @@ pub async fn download(
 async fn probe_with_retry(
     client: &reqwest::Client,
     url: &Url,
+    prime: Option<u64>,
     policy: &RetryPolicy,
     reporter: &Reporter,
     cancel: &Cancel,
-) -> Result<RemoteInfo, TransferError> {
+) -> Result<http::Primed, TransferError> {
     let mut attempts = 0u32;
     loop {
         if cancel.is_cancelled() {
             return Err(TransferError::Cancelled);
         }
-        match http::probe(client, url).await {
-            Ok(info) => return Ok(info),
+        match http::probe_priming(client, url, prime).await {
+            Ok(primed) => return Ok(primed),
             Err(err) => {
                 attempts += 1;
                 match policy.decide(&err, attempts) {
@@ -567,6 +606,15 @@ fn guard_existing_file(store: &Store, path: &Path, req: &DownloadRequest) -> Res
     );
 }
 
+/// How the fresh plan should be shaped: whether ranges may be split across
+/// connections at all, and how many leading bytes the priming probe already has
+/// in flight for the first range to pin itself to.
+#[derive(Debug, Clone, Copy)]
+struct PlanShape {
+    parallel: bool,
+    primed_len: u64,
+}
+
 /// Load, reconcile and if necessary rebuild the range plan.
 fn build_plan(
     store: &Store,
@@ -574,14 +622,15 @@ fn build_plan(
     info: &RemoteInfo,
     req: &DownloadRequest,
     file_len: u64,
-    parallel: bool,
+    shape: PlanShape,
     reporter: &Reporter,
 ) -> Result<Vec<RangeRecord>> {
     let persisted = store.load_ranges(&record.id)?;
 
     let fresh_plan = || -> Vec<RangeRecord> {
-        if parallel {
-            scheduler::plan(info.size.unwrap_or(0), req.connections)
+        if shape.parallel {
+            // Pin the first range to the bytes the probe already has in flight.
+            scheduler::plan_primed(info.size.unwrap_or(0), req.connections, shape.primed_len)
         } else {
             scheduler::plan_sequential(info.size)
         }
