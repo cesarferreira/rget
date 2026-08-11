@@ -19,6 +19,12 @@ that matter, and `netem.sh` when you need the real thing.
 **3. Small files measure process startup.** At loopback speeds a 64 MiB payload
 is dominated by exec, DNS, and the SQLite open. Use ≥512 MiB for uncapped work.
 
+**4. Never measure wasted bytes without a bandwidth cap.** An uncapped loopback
+server races arbitrarily far ahead of a client that is about to stop reading, so
+any abandoned response body looks enormous. The same build measured +4.12%
+over-fetch on loopback and **+0.003%** over a 50 MiB/s link. Always use
+`--cap-mibs-total` before quoting a wasted-bytes figure.
+
 ## Layout
 
 | File | Purpose |

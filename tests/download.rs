@@ -70,7 +70,11 @@ async fn downloads_in_parallel_and_reassembles_exactly() {
 #[tokio::test]
 async fn a_parallel_download_fetches_each_byte_exactly_once() {
     let ws = Workspace::new("nooverfetch");
-    let server = Server::start(Config::with_body(40 << 20)).await;
+    // Kept small on purpose: the harness builds its body a byte at a time, and
+    // the resume tests alongside this one have fixed wall-clock timeouts that a
+    // heavy suite can starve. 16 MiB still plans one primed range plus three
+    // more at `-c4`, which is all this property needs.
+    let server = Server::start(Config::with_body(16 << 20)).await;
     let body = server.body();
 
     let mut req = request(&server, "/parallel.bin", &ws);
