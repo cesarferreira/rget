@@ -64,10 +64,20 @@ loopback server with `--ttfb-ms 200` reproduces the live regression deterministi
 `-c1` now beats wget. Parallel modes improved by 1.4–2.4× but still sit at
 **2 × RTT**, and the reason is structural — see W2.
 
-## 2. The one real gap
+## 2. The live regression is still not explained
 
-The live regression is **not explained**, and nothing in the local harness
-reproduces it. What differs between the harness and the live runs:
+**W3 and W4 do not account for the live numbers, and it would be wrong to read
+them as a fix for issue #1.** Do the arithmetic: on the Rust static host, rget
+lost by 5.8 s over 167.8 MiB. With 8 connections that plan was 32 ranges, so 4
+setup waves; at ~20 ms RTT plus a TLS handshake per connection, the setup cost
+removed by W3+W4 is on the order of **240 ms**, not 5.8 s. The mechanism is real
+and worth removing — it just is not the one that produced the live matrix.
+
+The 200 ms TTFB used to reproduce it locally is 10× a realistic CDN RTT. It
+exposes the mechanism cleanly, which is what a diagnostic is for; it does not
+prove the mechanism dominates in the field.
+
+What still differs between the harness and the live runs:
 
 1. **TLS.** 8 connections means 8 handshakes, each a full RTT or two, versus
    wget's one.
@@ -82,10 +92,16 @@ reproduces it. What differs between the harness and the live runs:
 5. **Redirects.** The LM Studio URL redirects; that cost is paid per connection
    if connections do not share the resolved URL.
 
-Items 3 and 4 are the leading candidates, and both point the same direction: **on
-a path where one connection already saturates the bottleneck, opening eight is
-pure cost.** rget currently always fans out to `--connections` regardless of
-whether fanning out helps.
+Items 3 and 4 are the leading candidates — they are the only ones with the right
+order of magnitude — and both point the same direction: **on a path where one
+connection already saturates the bottleneck, opening eight is pure cost.** rget
+still fans out to `--connections` regardless of whether fanning out helps, which
+is W2.
+
+Confirming this needs `netem` (slow start and loss cannot be modelled by a token
+bucket) or instrumentation on a real CDN: per-range TTFB, retransmit counts, and
+per-connection throughput over time. Until one of those runs, the cause is a
+well-motivated hypothesis, not a finding.
 
 ## 3. Plan
 
