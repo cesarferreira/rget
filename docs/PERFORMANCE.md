@@ -55,11 +55,11 @@ loopback server with `--ttfb-ms 200` reproduces the live regression deterministi
 
 | 64 MiB, 200 ms TTFB | Baseline `064fd25` | After W3+W4 |
 |---|---:|---:|
-| wget | 0.254 s | 0.254 s |
-| rget `-c1` | 0.440 s | **0.247 s** |
-| rget `-c2` | 1.027 s | 0.622 s |
-| rget `-c4` | 1.033 s | 0.433 s |
-| rget `-c8` | 0.634 s | 0.438 s |
+| wget | 0.249 s | 0.249 s |
+| rget `-c1` | 0.438 s | **0.242 s** |
+| rget `-c2` | 1.027 s | 0.436 s |
+| rget `-c4` | 1.033 s | 0.437 s |
+| rget `-c8` | 0.636 s | 0.440 s |
 
 `-c1` now beats wget. Parallel modes improved by 1.4–2.4× but still sit at
 **2 × RTT**, and the reason is structural — see W2.
@@ -130,7 +130,7 @@ Nothing else can be validated until the regression is reproducible without a CDN
 requests until it knows the file's size, and it only learns that from the probe.
 So the floor for any parallel transfer is **2 × RTT**: one to learn the size, one
 to fan out. wget's floor is 1 × RTT. After W3+W4 that is the entire difference
-— 0.438 s versus 0.254 s in the table above is 0.184 s, one round trip.
+— 0.440 s versus 0.249 s in the table above is 0.191 s, one round trip.
 
 That round trip is worth paying on a download lasting minutes and absurd on one
 lasting 250 ms. Today rget pays it unconditionally.
@@ -160,8 +160,8 @@ parallelism actually helps.
 
 ### W3 — One round trip less, always `perf/fuse-probe` — **done**
 
-**Result:** `-c1` went from 0.440 s to 0.240 s under 200 ms TTFB, overtaking
-wget's 0.252 s. Request count drops by exactly one on every download, verified
+**Result:** `-c1` went from 0.438 s to 0.242 s under 200 ms TTFB, overtaking
+wget's 0.249 s. Request count drops by exactly one on every download, verified
 against `GET /stats`. A download of a server with no range support now costs
 exactly **one** request — byte-for-byte what wget does — and that is pinned by
 `the_probe_costs_no_extra_request` and by the rewritten
@@ -209,9 +209,9 @@ latency: 4 ranges per connection means 4 × RTT of setup on every download.
 
 **Result:** now one range per connection, with `Scheduler::acquire`'s splitting as
 the rebalancing mechanism instead of up-front oversubscription. `-c4` went 1.033 s
-→ 0.433 s and `-c8` 0.634 s → 0.438 s under 200 ms TTFB. Verified no regression
-where parallelism actually pays: against a 4 MiB/s per-response cap, `-c8` holds at
-1.760 s versus 1.761 s before, still ~9× wget.
+→ 0.437 s and `-c8` 0.636 s → 0.440 s under 200 ms TTFB. Verified no regression
+where parallelism actually pays: against a 4 MiB/s per-response cap, `-c8` finishes
+in 2.010 s against wget's 15.754 s, still ~7.8×.
 
 The claim that stealing balances as well as oversubscription is the part that
 deserves review scrutiny. `MAX_CHUNK` still bounds range size, so crash-recovery
@@ -219,6 +219,41 @@ granularity is unchanged for large files; `MIN_SPLIT_TAIL` and `SPLIT_MARGIN`
 govern whether a straggler can be split at all, and those thresholds have not been
 re-tuned for the new plan shape. A heterogeneous-latency server test (one range
 served far slower than the rest) is the missing coverage.
+
+### W4b — Abandoned in-flight bytes, and a harness trap worth knowing
+
+Both changes above abandon response bodies: the fused probe stops at the first
+chunk boundary, and every steal lowers a victim's ceiling while its response is
+still streaming. Measured on loopback, that looked alarming — up to **4.12%** of a
+512 MiB transfer, 22 MiB of paid-for bytes thrown away.
+
+Two findings came out of chasing it, and the second is the more useful one.
+
+**1. The fused probe should ask for a bounded range.** `bytes=0-` makes the server
+send the whole file down a connection whose worker wants only the first chunk. It
+now asks for `bytes=0-<MIN_CHUNK-1>` when fanning out, and `plan_primed` pins the
+plan's first range to exactly the bytes the server served. Requests stay at one
+per connection, so the round-trip win is untouched, and nothing is asked for that
+will not be used. `-c1` still probes open-ended, because there the primed body is
+the whole transfer.
+
+**2. An uncapped loopback server wildly exaggerates abandoned-tail waste.** With
+no bandwidth limit the server races arbitrarily far ahead of a client that is
+about to stop reading. Give it a realistic link and the effect nearly vanishes:
+
+| 512 MiB, `-c8` | Over-fetch |
+|---|---:|
+| Loopback, no bandwidth limit | +4.12% (22.1 MiB) |
+| Same build over a 50 MiB/s link | **+0.003%** (15.8 KiB) |
+
+On any real network, in-flight bytes are bounded by the receive window and the
+bandwidth-delay product, not by how fast the server can spin. Baseline `064fd25`
+measures ~0% on loopback only because its 4× oversubscription means idle workers
+find pending ranges instead of stealing — it has fewer splits, not cheaper ones.
+
+**Rule for this harness:** never quote a wasted-bytes number measured without
+`--cap-mibs-total`. It is measuring the harness, in the same way the very first
+uncapped throughput numbers in issue #1 were measuring the disk.
 
 ### W5 — Lock the wins in `perf/regression-guard`
 
