@@ -36,3 +36,18 @@ jobs:
         uses: taiki-e/install-action@nextest
       - name: Test
         run: cargo nextest run
+
+  windows:
+    name: Windows build
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+      # The test suite calls kill(2) directly, so only the shipped code is
+      # checked here. Catches Windows-only breakage before a release tag does.
+      - name: Check
+        run: cargo check --lib --bins

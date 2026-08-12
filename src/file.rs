@@ -149,13 +149,25 @@ fn identity_of(file: &File) -> io::Result<FileIdentity> {
     }
     #[cfg(windows)]
     {
-        // Windows has no stable inode in `Metadata`; fall back to a
-        // size+created pair, which is weaker but still catches replacement.
-        use std::os::windows::fs::MetadataExt;
-        let m = file.metadata()?;
+        // The equivalents on `Metadata` are still unstable
+        // (`windows_by_handle`), so ask the OS directly. Volume serial plus
+        // file index is Windows' answer to dev+ino.
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // Safe: the handle is owned by `file` and outlives the call, and `info`
+        // is a valid, correctly sized out-parameter.
+        let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info) };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
         Ok(FileIdentity {
-            dev: m.volume_serial_number().unwrap_or(0) as u64,
-            ino: m.file_index().unwrap_or(0),
+            dev: u64::from(info.dwVolumeSerialNumber),
+            ino: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
         })
     }
 }

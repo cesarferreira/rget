@@ -50,6 +50,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 terminal_size = "0.4"
 thiserror = "2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 
