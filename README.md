@@ -32,11 +32,6 @@ Requires [Rust](https://rustup.rs) **1.85+** and `~/.cargo/bin` on your `PATH`.
 cargo install rget-cli
 ```
 
-> Published as **`rget-cli`**, installs a command called **`rget`**. The bare
-> `rget` name on crates.io belongs to an unrelated project last published in
-> 2017. Before the first release, install from git instead:
-> `cargo install --git https://github.com/cesarferreira/rget`
-
 Verify:
 
 ```bash
