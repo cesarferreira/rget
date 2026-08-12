@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-08-12
+
+### 💼 Other
+
+- Added macOS lib
+- New screenshot
+- Nexttest
 ## [0.2.0] - 2026-08-11
 
 ### 💼 Other
