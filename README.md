@@ -16,6 +16,8 @@
     &nbsp;·&nbsp;
     <a href="#development">Development</a>
   </p>
+
+  <img alt="rget resuming a download" src="assets/screenshot.png" width="640">
 </div>
 
 ---
