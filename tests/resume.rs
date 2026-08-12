@@ -510,7 +510,7 @@ async fn sigint_pauses_and_saves_progress() {
 }
 
 /// PRD §39's definition of done, run as a loop. Excluded from the default run
-/// because it takes minutes; `cargo test -- --ignored` exercises it.
+/// because it takes minutes; `cargo nextest run --run-ignored only` exercises it.
 #[tokio::test]
 #[ignore = "long-running soak test"]
 async fn soak_random_kills_always_produce_the_right_checksum() {
@@ -659,6 +659,95 @@ async fn list_info_resume_and_forget() {
         "forget must not delete files"
     );
     assert!(ws.store().list().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn forget_all_and_forget_all_files() {
+    let ws = Workspace::new("forgetall");
+    let server = Server::start(Config::with_body(64 * 1024)).await;
+
+    for name in ["one.bin", "two.bin"] {
+        let url = server.url(&format!("/{name}"));
+        let out = rget(
+            &ws,
+            &[
+                "--quiet",
+                &url,
+                "--dir",
+                &ws.dir.to_string_lossy(),
+                "-o",
+                name,
+            ],
+        )
+        .output()
+        .await
+        .unwrap();
+        assert!(
+            out.status.success(),
+            "download {name} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(ws.path(name).exists());
+    }
+    assert_eq!(ws.store().list().unwrap().len(), 2);
+
+    // --all drops metadata, leaves files
+    let out = rget(&ws, &["forget", "--all"]).output().await.unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(ws.store().list().unwrap().is_empty());
+    assert!(ws.path("one.bin").exists());
+    assert!(ws.path("two.bin").exists());
+
+    // Fresh downloads, then --all --files removes metadata and files.
+    for name in ["three.bin", "four.bin"] {
+        let url = server.url(&format!("/{name}"));
+        let out = rget(
+            &ws,
+            &[
+                "--quiet",
+                &url,
+                "--dir",
+                &ws.dir.to_string_lossy(),
+                "-o",
+                name,
+            ],
+        )
+        .output()
+        .await
+        .unwrap();
+        assert!(
+            out.status.success(),
+            "download {name} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert_eq!(ws.store().list().unwrap().len(), 2);
+
+    let out = rget(&ws, &["forget", "--all", "--files"])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(ws.store().list().unwrap().is_empty());
+    assert!(
+        !ws.path("three.bin").exists(),
+        "forget --all --files must delete files"
+    );
+    assert!(
+        !ws.path("four.bin").exists(),
+        "forget --all --files must delete files"
+    );
+    // Earlier files from the metadata-only forget are untouched.
+    assert!(ws.path("one.bin").exists());
+    assert!(ws.path("two.bin").exists());
 }
 
 #[tokio::test]

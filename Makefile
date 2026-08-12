@@ -33,7 +33,7 @@ clean:
 
 # Run tests
 test:
-	cargo test
+	cargo nextest run
 
 # Run clippy and check
 check:

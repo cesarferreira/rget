@@ -162,6 +162,8 @@ rget info a82fd1      # validators, ranges, progress, last error
 rget resume a82fd1    # continue one, with no other flags needed
 rget resume --all     # continue everything that was interrupted
 rget forget a82fd1    # drop the metadata; never touches the file
+rget forget --all     # drop every download's metadata
+rget forget --all --files  # drop metadata and delete the files too
 ```
 
 ### Scripting
@@ -220,8 +222,8 @@ malformed `Content-Range`, hang up mid-body, dribble bytes, change its `ETag`
 mid-download, and answer with 429/500/502/503 plus `Retry-After`.
 
 ```bash
-cargo test                        # unit + integration + property tests
-cargo test -- --ignored           # the soak test: repeated random kills
+cargo nextest run                 # unit + integration + property tests
+cargo nextest run --run-ignored only  # the soak test: repeated random kills
 ```
 
 The resume tests `SIGKILL` the real binary mid-transfer, restart it, and require

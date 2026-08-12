@@ -38,6 +38,8 @@ const MAX_CONNECTIONS: usize = 64;
         rget https://mirror1/f.iso https://mirror2/f.iso --sha256 <digest>\n  \
         rget list\n  \
         rget resume --all\n  \
+        rget forget --all\n  \
+        rget forget --all --files\n  \
         rget config --dir ~/Downloads"
 )]
 pub struct Cli {
@@ -77,10 +79,16 @@ pub enum Command {
         #[arg(long)]
         all: bool,
     },
-    /// Forget a download's metadata. Never deletes the downloaded file
+    /// Forget download metadata. Leaves files on disk unless --files is set
     Forget {
         /// Download id, or any unambiguous prefix
-        id: String,
+        id: Option<String>,
+        /// Forget every download this machine knows about
+        #[arg(long)]
+        all: bool,
+        /// Also delete the downloaded file(s) from disk
+        #[arg(long)]
+        files: bool,
     },
     /// Show or change settings
     Config {
@@ -290,8 +298,8 @@ pub async fn dispatch(cli: Cli) -> Result<i32> {
             cmd_info(&store, id, cli.json)?;
             Ok(EXIT_OK)
         }
-        Some(Command::Forget { id }) => {
-            cmd_forget(&store, id)?;
+        Some(Command::Forget { id, all, files }) => {
+            cmd_forget(&store, id.as_deref(), *all, *files)?;
             Ok(EXIT_OK)
         }
         Some(Command::Config { dir, reset }) => {
@@ -651,20 +659,62 @@ fn cmd_config(store: &Store, dir: Option<&str>, reset: bool, json: bool) -> Resu
     Ok(())
 }
 
-fn cmd_forget(store: &Store, id: &str) -> Result<()> {
-    let record = store.resolve_id(id)?;
-    store.forget(&record.id)?;
+fn cmd_forget(store: &Store, id: Option<&str>, all: bool, files: bool) -> Result<()> {
+    let targets: Vec<DownloadRecord> = match (id, all) {
+        (Some(_), true) => bail!("pass either an id or --all, not both"),
+        (Some(id), false) => vec![store.resolve_id(id)?],
+        (None, true) => store.list()?,
+        (None, false) => bail!("which download? pass an id or --all (see `rget list`)"),
+    };
+
     let style = fmt::Style::stdout();
-    println!(
-        "{} Forgot {} ({}){}",
-        style.bold_green("✓"),
-        style.dim(&record.id),
-        style.bold(&record.filename),
-        style.dim(&format!(
-            "\n  the file at {} was left alone",
-            record.destination
-        ))
-    );
+    if targets.is_empty() {
+        println!("Nothing to forget.");
+        return Ok(());
+    }
+
+    for record in &targets {
+        if files {
+            let path = std::path::Path::new(&record.destination);
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("cannot delete {}", path.display()));
+                }
+            }
+        }
+        store.forget(&record.id)?;
+    }
+
+    if targets.len() == 1 {
+        let record = &targets[0];
+        let note = if files {
+            format!("\n  deleted {}", record.destination)
+        } else {
+            format!("\n  the file at {} was left alone", record.destination)
+        };
+        println!(
+            "{} Forgot {} ({}){}",
+            style.bold_green("✓"),
+            style.dim(&record.id),
+            style.bold(&record.filename),
+            style.dim(&note)
+        );
+    } else {
+        let note = if files {
+            "metadata and files deleted"
+        } else {
+            "metadata forgotten; files left alone"
+        };
+        println!(
+            "{} Forgot {} downloads ({})",
+            style.bold_green("✓"),
+            targets.len(),
+            style.dim(note)
+        );
+    }
     Ok(())
 }
 
@@ -766,6 +816,26 @@ mod tests {
                 assert!(all);
             }
             other => panic!("expected resume, got {other:?}"),
+        }
+
+        let cli = parse(&["rget", "forget", "--all", "--files"]);
+        match cli.command {
+            Some(Command::Forget { id, all, files }) => {
+                assert!(id.is_none());
+                assert!(all);
+                assert!(files);
+            }
+            other => panic!("expected forget, got {other:?}"),
+        }
+
+        let cli = parse(&["rget", "forget", "a82fd1", "--files"]);
+        match cli.command {
+            Some(Command::Forget { id, all, files }) => {
+                assert_eq!(id.as_deref(), Some("a82fd1"));
+                assert!(!all);
+                assert!(files);
+            }
+            other => panic!("expected forget, got {other:?}"),
         }
     }
 
