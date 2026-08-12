@@ -680,8 +680,7 @@ fn cmd_forget(store: &Store, id: Option<&str>, all: bool, files: bool) -> Result
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) => {
-                    return Err(err)
-                        .with_context(|| format!("cannot delete {}", path.display()));
+                    return Err(err).with_context(|| format!("cannot delete {}", path.display()));
                 }
             }
         }
