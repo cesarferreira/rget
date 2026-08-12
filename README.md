@@ -9,6 +9,8 @@
     <img alt="Edition" src="https://img.shields.io/badge/edition-2024-blue">
   </p>
 
+<img alt="rget resuming a download" src="assets/screenshot.png" width="840">
+
   <p>
     <a href="#install">Install</a>
     &nbsp;·&nbsp;
@@ -17,7 +19,7 @@
     <a href="#development">Development</a>
   </p>
 
-  <img alt="rget resuming a download" src="assets/screenshot.png" width="640">
+  
 </div>
 
 ---
@@ -153,16 +155,16 @@ ID       FILE                       PROGRESS          STATUS
 ```
 
 ```bash
-rget config           # where downloads go, and where state lives
+rget config                # where downloads go, and where state lives
 rget config --dir ~/ISOs
-rget config --reset   # be asked again next time
+rget config --reset        # be asked again next time
 
-rget list             # everything this machine knows about
-rget info a82fd1      # validators, ranges, progress, last error
-rget resume a82fd1    # continue one, with no other flags needed
-rget resume --all     # continue everything that was interrupted
-rget forget a82fd1    # drop the metadata; never touches the file
-rget forget --all     # drop every download's metadata
+rget list                  # everything this machine knows about
+rget info a82fd1           # validators, ranges, progress, last error
+rget resume a82fd1         # continue one, with no other flags needed
+rget resume --all          # continue everything that was interrupted
+rget forget a82fd1         # drop the metadata; never touches the file
+rget forget --all          # drop every download's metadata
 rget forget --all --files  # drop metadata and delete the files too
 ```
 
