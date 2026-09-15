@@ -35,6 +35,7 @@ pub mod integrity;
 pub mod limit;
 pub mod mirror;
 pub mod naming;
+pub mod netrc;
 pub mod progress;
 pub mod resume;
 pub mod retry;

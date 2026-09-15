@@ -262,6 +262,14 @@ impl GetArgs {
     }
 
     fn to_request(&self, urls: Vec<Url>) -> Result<DownloadRequest> {
+        let mut http = self.http_config()?;
+        // `--user` always wins; only consult `.netrc` when the user gave us
+        // nothing to work with, same precedence curl and wget use.
+        if http.basic_auth.is_none() {
+            if let Some(host) = urls.first().and_then(|u| u.host_str()) {
+                http.basic_auth = crate::netrc::lookup(host);
+            }
+        }
         Ok(DownloadRequest {
             urls,
             output: self.output.clone(),
@@ -272,7 +280,7 @@ impl GetArgs {
                 Some(raw) => Some(limit::parse_rate(raw).map_err(|e| anyhow::anyhow!(e))?),
                 None => None,
             },
-            http: self.http_config()?,
+            http,
             retries: self.retries,
             overwrite: self.overwrite,
             restart: self.restart,
