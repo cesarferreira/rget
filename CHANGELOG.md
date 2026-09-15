@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3] - 2026-09-15
+
+### 💼 Other
+
+- Updated readme
+- Added support for netrc
 ## [0.3.2] - 2026-08-12
 
 ### 🐛 Bug Fixes
